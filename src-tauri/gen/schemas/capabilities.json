@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Capabilities for the Luoshu shell webview","local":true,"windows":["shell"],"permissions":["core:default","core:event:allow-listen","core:webview:default","core:window:default"]}}
