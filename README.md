@@ -15,6 +15,8 @@
 
 ## 构建
 
+预编译包：GitHub Actions（`.github/workflows/release.yml`）在 Windows / macOS（arm64 + x86_64）/ Linux 上构建；推 `v*` tag 自动发布到 Releases，手动触发（workflow_dispatch）产出 workflow artifacts。**未签名**：macOS 首次打开需右键 → 打开（Gatekeeper），Windows 会弹 SmartScreen 提示。
+
 ```bash
 # 系统依赖（Debian 13 / trixie）
 sudo apt-get install build-essential pkg-config libglib2.0-dev libgtk-3-dev \
