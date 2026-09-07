@@ -22,3 +22,4 @@ pub mod mcp;
 pub mod sandbox;
 pub mod server;
 pub mod tools;
+pub mod tunnel;

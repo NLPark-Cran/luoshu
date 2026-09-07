@@ -1,6 +1,8 @@
 //! Configuration & per-install state (`~/.luoshu/`).
 //!
 //! - `bridge.json`        — {port, token, pid, started_at}, mode 0600, rewritten each run.
+//! - `device.json`        — cloud enrollment {cloud_url, device_id, device_token, name},
+//!                          mode 0600, written once at device registration (ADR 004).
 //! - `allowed_roots.json` — {"roots": ["/abs/path", ...]}, optional; overrides default roots.
 //! - `screenshots/`       — PNG output of `luoshu_screenshot`.
 
@@ -32,6 +34,33 @@ pub struct BridgeStateFile {
 #[derive(Debug, Deserialize)]
 struct AllowedRootsFile {
     roots: Vec<String>,
+}
+
+/// Cloud enrollment for the reverse tunnel (ADR 004). The `device_token` is
+/// issued once by `POST /api/v2/devices` on the cran-code server and stored
+/// here (0600); the server only keeps its SHA-256 hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceCredentials {
+    /// e.g. `https://crys.tt2.li` (scheme rewritten to ws/wss for dialing).
+    pub cloud_url: String,
+    pub device_id: String,
+    pub device_token: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl DeviceCredentials {
+    /// WebSocket URL of the cloud tunnel endpoint.
+    pub fn tunnel_url(&self) -> String {
+        let base = self.cloud_url.trim_end_matches('/');
+        let ws_base = base
+            .replacen("https://", "wss://", 1)
+            .replacen("http://", "ws://", 1);
+        format!(
+            "{ws_base}/api/v2/devices/{}/tunnel?token={}",
+            self.device_id, self.device_token
+        )
+    }
 }
 
 impl BridgeConfig {
@@ -68,6 +97,25 @@ impl BridgeConfig {
 
     pub fn screenshots_dir(&self) -> PathBuf {
         self.home_dir.join("screenshots")
+    }
+
+    pub fn device_path(&self) -> PathBuf {
+        self.home_dir.join("device.json")
+    }
+
+    /// Load cloud enrollment, if the device has been registered.
+    pub fn load_device_credentials(&self) -> Option<DeviceCredentials> {
+        let content = fs::read_to_string(self.device_path()).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    /// Persist cloud enrollment with 0600 permissions.
+    pub fn write_device_credentials(&self, creds: &DeviceCredentials) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(creds).map_err(std::io::Error::other)?;
+        let path = self.device_path();
+        fs::write(&path, json)?;
+        set_mode_0600(&path)?;
+        Ok(())
     }
 
     /// Persist `{port, token, pid, started_at}` with 0600 permissions.
@@ -162,6 +210,30 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(cfg.state_path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn device_credentials_roundtrip_with_0600() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = BridgeConfig::for_test(tmp.path().join(".luoshu"), "tok");
+        fs::create_dir_all(&cfg.home_dir).unwrap();
+        assert!(cfg.load_device_credentials().is_none());
+        let creds = DeviceCredentials {
+            cloud_url: "https://crys.tt2.li".into(),
+            device_id: "d1".into(),
+            device_token: "secret".into(),
+            name: Some("rig".into()),
+        };
+        cfg.write_device_credentials(&creds).unwrap();
+        let loaded = cfg.load_device_credentials().unwrap();
+        assert_eq!(loaded.device_id, "d1");
+        assert_eq!(loaded.device_token, "secret");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(cfg.device_path()).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
     }

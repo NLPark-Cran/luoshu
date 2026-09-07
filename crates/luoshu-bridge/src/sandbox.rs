@@ -37,6 +37,8 @@ const SENSITIVE_EXACT: &[&str] = &[
     "credentials",
     // Never leak the bridge's own state (contains the auth token).
     "bridge.json",
+    // Cloud enrollment (contains the device token; ADR 004).
+    "device.json",
 ];
 
 /// Prefixes refused (case-insensitive): `.env`, `.env.local`, ...
