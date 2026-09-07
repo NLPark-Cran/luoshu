@@ -1,0 +1,243 @@
+//! 洛书 Luoshu — Tauri shell.
+//!
+//! One window, two webviews:
+//! - `shell` (top, 48px): native toolbar — nav buttons, bridge status,
+//!   MCP config copy, approval dialogs, about page.
+//! - `main`  (rest): the cloud app (default https://crys.tt2.li, override via
+//!   `LUOSHU_TARGET_URL`).
+//!
+//! On startup we spawn the loopback device bridge (luoshu-bridge crate) and
+//! expose its state to the shell webview via IPC.
+
+use std::sync::{Arc, Mutex};
+
+use luoshu_bridge::approval::BridgeEventSink;
+use luoshu_bridge::browser::{BrowserControl, BrowserError};
+use luoshu_bridge::config::BridgeConfig;
+use luoshu_bridge::server::{self, RunningBridge};
+use luoshu_bridge::tools::ToolContext;
+use serde::Serialize;
+use serde_json::json;
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewUrl};
+
+const DEFAULT_TARGET_URL: &str = "https://crys.tt2.li";
+const TARGET_URL_ENV: &str = "LUOSHU_TARGET_URL";
+const TOOLBAR_HEIGHT: f64 = 48.0;
+
+fn target_url() -> String {
+    std::env::var(TARGET_URL_ENV).unwrap_or_else(|_| DEFAULT_TARGET_URL.to_string())
+}
+
+/// Shared app state managed by Tauri.
+struct AppState {
+    bridge: Mutex<Option<BridgeInfo>>,
+}
+
+struct BridgeInfo {
+    port: u16,
+    token: String,
+    ctx: Arc<ToolContext>,
+    _handle: Arc<RunningBridge>,
+}
+
+#[derive(Serialize)]
+struct BridgeStatus {
+    running: bool,
+    port: Option<u16>,
+    url: Option<String>,
+}
+
+// ------------------------------------------------------------------ events
+
+struct TauriSink {
+    app: AppHandle,
+}
+
+impl BridgeEventSink for TauriSink {
+    fn on_approval_requested(&self, command: &str, token: &str) {
+        let _ = self.app.emit_to(
+            "shell",
+            "bridge-approval",
+            json!({ "command": command, "token": token }),
+        );
+    }
+}
+
+// ------------------------------------------------------- browser control
+
+struct TauriBrowser {
+    app: AppHandle,
+}
+
+#[async_trait::async_trait]
+impl BrowserControl for TauriBrowser {
+    async fn eval(&self, script: &str) -> Result<String, BrowserError> {
+        let wv = self
+            .app
+            .get_webview("main")
+            .ok_or(BrowserError::Unavailable)?;
+        // Tauri's eval is fire-and-forget; the JS runs in the page context.
+        // Return values are not supported on Linux WebKitGTK → report "null".
+        wv.eval(script).map_err(|e| BrowserError::Failed(e.to_string()))?;
+        Ok("null".into())
+    }
+
+    async fn navigate(&self, url: &str) -> Result<(), BrowserError> {
+        let wv = self
+            .app
+            .get_webview("main")
+            .ok_or(BrowserError::Unavailable)?;
+        let url = url
+            .parse()
+            .map_err(|_| BrowserError::Failed(format!("invalid url: {url}")))?;
+        wv.navigate(url).map_err(|e| BrowserError::Failed(e.to_string()))
+    }
+}
+
+// ------------------------------------------------------------------- IPC
+
+#[tauri::command]
+fn bridge_status(state: State<'_, AppState>) -> BridgeStatus {
+    let guard = state.bridge.lock().unwrap();
+    match guard.as_ref() {
+        Some(info) => BridgeStatus {
+            running: true,
+            port: Some(info.port),
+            url: Some(format!("http://127.0.0.1:{}/mcp", info.port)),
+        },
+        None => BridgeStatus {
+            running: false,
+            port: None,
+            url: None,
+        },
+    }
+}
+
+#[tauri::command]
+fn mcp_config(state: State<'_, AppState>) -> Result<String, String> {
+    let guard = state.bridge.lock().unwrap();
+    let info = guard.as_ref().ok_or("bridge not running yet")?;
+    Ok(server::mcp_config_snippet(info.port, &info.token))
+}
+
+#[tauri::command]
+fn get_target_url() -> String {
+    target_url()
+}
+
+#[tauri::command]
+fn nav(app: AppHandle, action: String) -> Result<(), String> {
+    let wv = app.get_webview("main").ok_or("main webview not found")?;
+    match action.as_str() {
+        "back" => wv.eval("history.back()"),
+        "forward" => wv.eval("history.forward()"),
+        "reload" => wv.eval("location.reload()"),
+        "home" => {
+            let url: tauri::Url = target_url().parse().map_err(|_| "bad target url")?;
+            return wv.navigate(url).map_err(|e| e.to_string());
+        }
+        other => return Err(format!("unknown nav action: {other}")),
+    }
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn deny_approval(state: State<'_, AppState>, token: String) {
+    let guard = state.bridge.lock().unwrap();
+    if let Some(info) = guard.as_ref() {
+        info.ctx.approvals.revoke(&token);
+    }
+}
+
+// ------------------------------------------------------------------- run
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .manage(AppState {
+            bridge: Mutex::new(None),
+        })
+        .invoke_handler(tauri::generate_handler![
+            bridge_status,
+            mcp_config,
+            get_target_url,
+            nav,
+            deny_approval
+        ])
+        .setup(|app| {
+            let url: tauri::Url = target_url()
+                .parse()
+                .map_err(|_| format!("invalid {TARGET_URL_ENV}"))?;
+
+            // Shell window: the primary webview is the toolbar itself.
+            let webview_window = tauri::WebviewWindowBuilder::new(
+                app,
+                "shell",
+                WebviewUrl::App("index.html".into()),
+            )
+            .title("洛书 Luoshu")
+            .inner_size(1280.0, 840.0)
+            .min_inner_size(720.0, 480.0)
+            .build()?;
+
+            // Child webview for the cloud app (multi-webview = `unstable` feature).
+            let window = app
+                .get_window("shell")
+                .ok_or("shell window missing after build")?;
+            let size = webview_window.inner_size()?;
+            window.add_child(
+                tauri::webview::WebviewBuilder::new("main", WebviewUrl::External(url)),
+                LogicalPosition::new(0.0, TOOLBAR_HEIGHT),
+                LogicalSize::new(
+                    f64::from(size.width),
+                    f64::from(size.height) - TOOLBAR_HEIGHT,
+                ),
+            )?;
+
+            // Keep the main webview fitted below the toolbar on resize.
+            let app_for_resize = app.handle().clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::Resized(size) = event {
+                    if let Some(wv) = app_for_resize.get_webview("main") {
+                        let _ = wv.set_position(LogicalPosition::new(0.0, TOOLBAR_HEIGHT));
+                        let _ = wv.set_size(LogicalSize::new(
+                            f64::from(size.width),
+                            (f64::from(size.height) - TOOLBAR_HEIGHT).max(0.0),
+                        ));
+                    }
+                }
+            });
+
+            // Start the device bridge on the Tauri async runtime.
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let sink = Arc::new(TauriSink {
+                    app: app_handle.clone(),
+                });
+                let browser: Arc<dyn BrowserControl> = Arc::new(TauriBrowser {
+                    app: app_handle.clone(),
+                });
+                match BridgeConfig::from_env() {
+                    Ok(config) => match server::start(config, sink, Some(browser)).await {
+                        Ok(running) => {
+                            let info = BridgeInfo {
+                                port: running.port,
+                                token: running.token.clone(),
+                                ctx: running.ctx.clone(),
+                                _handle: Arc::new(running),
+                            };
+                            let state: State<'_, AppState> = app_handle.state();
+                            *state.bridge.lock().unwrap() = Some(info);
+                            let _ = app_handle.emit_to("shell", "bridge-status", json!({"running": true}));
+                        }
+                        Err(e) => eprintln!("luoshu: bridge failed to start: {e}"),
+                    },
+                    Err(e) => eprintln!("luoshu: bridge config error: {e}"),
+                }
+            });
+
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running luoshu");
+}

@@ -1,0 +1,97 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  font-family: system-ui, "PingFang SC", "Noto Sans CJK SC", sans-serif;
+  background: #f5f5f7;
+}
+
+#toolbar {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  background: #fff;
+  border-bottom: 1px solid #e2e2e6;
+  user-select: none;
+}
+
+.logo { width: 28px; height: 28px; border-radius: 50%; }
+.brand { font-weight: 600; margin-right: 8px; color: #333; }
+.spacer { flex: 1; }
+
+button {
+  border: 1px solid #ddd;
+  background: #fafafa;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #333;
+}
+button:hover { background: #efefef; }
+
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #666;
+  padding: 3px 8px;
+  border-radius: 10px;
+  background: #f0f0f2;
+}
+.status .dot { width: 8px; height: 8px; border-radius: 50%; }
+.status.green .dot { background: #22c55e; }
+.status.red .dot { background: #ef4444; }
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.overlay.hidden { display: none; }
+
+.dialog {
+  background: #fff;
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 520px;
+  width: 90%;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.dialog h2 { font-size: 16px; margin-bottom: 12px; }
+.dialog pre {
+  background: #1e1e24;
+  color: #f8f8f2;
+  padding: 10px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 12px;
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.dialog .token {
+  font-family: ui-monospace, monospace;
+  font-size: 32px;
+  letter-spacing: 8px;
+  text-align: center;
+  padding: 12px;
+  background: #fef3c7;
+  border: 2px dashed #f59e0b;
+  border-radius: 8px;
+  margin: 12px 0;
+  user-select: all;
+}
+.dialog .hint { font-size: 12px; color: #888; margin-bottom: 12px; }
+.dialog.about { text-align: center; }
+.dialog.about .banner { width: 100%; border-radius: 8px; margin-bottom: 12px; }
+.dialog.about h2 { margin: 8px 0; }
+.dialog.about p { font-size: 13px; color: #555; margin-bottom: 8px; }

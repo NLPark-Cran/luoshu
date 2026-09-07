@@ -1,0 +1,28 @@
+[package]
+name = "luoshu-bridge"
+description = "Luoshu local device bridge: loopback MCP server exposing local-device tools to cran-code agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["screenshot"]
+# Screen capture via the `screenshots` crate (X11/Wayland/macOS/Windows).
+# Disable with --no-default-features on headless build hosts.
+screenshot = ["dep:screenshots"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "fs", "io-util"] }
+axum = "0.8"
+rand = "0.9"
+dirs = "6"
+sysinfo = "0.33"
+thiserror = "2"
+async-trait = "0.1"
+screenshots = { version = "0.8", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }

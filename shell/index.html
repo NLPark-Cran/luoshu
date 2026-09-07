@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>洛书 Luoshu</title>
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+  <div id="toolbar">
+    <img class="logo" src="assets/luoluo-avatar-laptop.webp" alt="洛洛" />
+    <span class="brand">洛书</span>
+    <button id="nav-back" title="后退">←</button>
+    <button id="nav-forward" title="前进">→</button>
+    <button id="nav-reload" title="刷新">⟳</button>
+    <button id="nav-home" title="主页">⌂</button>
+    <span class="spacer"></span>
+    <span id="bridge-status" class="status red" title="设备桥状态">
+      <span class="dot"></span><span id="bridge-label">设备桥</span>
+    </span>
+    <button id="copy-mcp" title="复制 cran-code MCP 配置">复制 MCP 配置</button>
+    <button id="about-btn" title="关于">关于</button>
+  </div>
+
+  <!-- approval dialog -->
+  <div id="approval-overlay" class="overlay hidden">
+    <div class="dialog">
+      <h2>⚠️ 云端 Agent 请求执行高危命令</h2>
+      <pre id="approval-command"></pre>
+      <p>一次性批准码（5 分钟内有效，绑定此命令）：</p>
+      <div id="approval-token" class="token"></div>
+      <p class="hint">只有在信任该命令时，才把批准码告知 Agent。</p>
+      <button id="approval-deny">拒绝</button>
+    </div>
+  </div>
+
+  <!-- about page -->
+  <div id="about-overlay" class="overlay hidden">
+    <div class="dialog about">
+      <img class="banner" src="assets/luoluo-trio-banner.webp" alt="特工洛洛与伙伴们" />
+      <h2>洛书 Luoshu</h2>
+      <p>猹询码（Cran Code）的本地陪伴客户端 —— 云端 Agent 与本地设备之间的入口桥。</p>
+      <p class="hint">设备桥：loopback MCP server · 令牌见 <code>~/.luoshu/bridge.json</code></p>
+      <button id="about-close">关闭</button>
+    </div>
+  </div>
+
+  <script src="shell.js"></script>
+</body>
+</html>

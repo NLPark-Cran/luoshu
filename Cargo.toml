@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/luoshu-bridge", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.dev]
+# Tauri pulls a large dep tree; keep dev builds fast.
+incremental = true
