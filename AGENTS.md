@@ -5,12 +5,13 @@
 ## 当前状态（2026-09-07）
 
 MVP 已完成并推送：`crates/luoshu-bridge`（loopback MCP 设备桥）+ `src-tauri`（Tauri v2 壳骨架）+ `shell/`（原生壳 UI）。
-**任务 1/5 反向隧道已完成**（docs/004，crys 侧提交 620da51c + 09d9dbc0）：洛书 WS 隧道客户端（重连 + 指数退避 + 4401 停连）+ 云端设备注册/WS 隧道/中继/会话绑定。bridge 34 测试绿。
+**任务 1/5 反向隧道已完成**（docs/004，crys 侧提交 620da51c + 09d9dbc0，已部署生产）：洛书 WS 隧道客户端（重连 + 指数退避 + 4401 停连）+ 云端设备注册/WS 隧道/中继/会话绑定。
+**任务 2 Computer Use 工具面已完成**：browser_eval 返回值（nonce 回写）+ 截图内联 + 浏览历史。bridge 40 测试绿。
 
 ## v2 任务清单（全部要做，按依赖排序）
 
 1. ~~**反向隧道（最关键）**~~ ✅ 已完成（docs/004）。
-2. **Computer Use 工具面扩展**：`browser_eval` 返回值（Linux 上 Tauri eval 是 fire-and-forget——调研用 JS 回写 loopback HTTP 的方式拿结果）、`luoshu_screenshot` 返回内联图片、tab 管理（多 webview 或单 webview + 历史）。
+2. ~~**Computer Use 工具面扩展**~~ ✅ 已完成：`browser_eval` 返回值（JS 回写 loopback + 一次性 nonce，桥 token 不进页面上下文；拦截/超时自动降级 fire-and-forget）、`luoshu_screenshot` 内联 PNG（>12MB 降级仅路径）、tab 管理走「单 webview + 历史」（`luoshu_browser_history` + `on_navigation` 钩子，上限 500 条）。多 webview tab 条留作任务 3 可选增强。
 3. **壳体验**：窗口/图标/启动画面/设置页完善；洛洛人格露出（assets/ 里的素材）；暗色模式跟随系统。
 4. **观猹登录（公开客户端 + PKCE）**：Tauri 内嵌授权流，loopback 回调 `http://127.0.0.1:<port>/oauth/callback`。申请材料见 cran-code 仓库 `docs/dev/guancha-application.md`（用户已启动申请流程；client_id 到位前把流程代码留可配置）。
 5. ~~**cran-code 侧配合改动**~~ ✅ 已完成（crys main: 620da51c + 09d9dbc0）：

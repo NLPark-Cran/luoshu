@@ -2232,6 +2232,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "dirs",
  "futures-util",
  "rand 0.9.5",

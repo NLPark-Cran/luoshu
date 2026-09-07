@@ -18,6 +18,7 @@ use crate::approval::{ApprovalStore, BridgeEventSink};
 use crate::auth::bearer_token_valid;
 use crate::browser::BrowserControl;
 use crate::config::BridgeConfig;
+use crate::eval_relay::EvalResultStore;
 use crate::mcp;
 use crate::sandbox::Sandbox;
 use crate::tools::ToolContext;
@@ -45,14 +46,22 @@ struct ServerState {
 }
 
 /// Build the axum router (also used directly by integration tests).
+///
+/// `/mcp` and `/healthz` sit behind the bearer middleware; `/eval-result`
+/// deliberately does NOT — it is called from webview page JS which must
+/// never see the bridge token. It is guarded by a per-eval one-time nonce
+/// instead (see `eval_relay`).
 pub fn router(ctx: Arc<ToolContext>, token: String) -> Router {
-    Router::new()
+    let authed = Router::new()
         .route("/mcp", post(handle_mcp_post))
         .route("/healthz", get(|| async { Json(json!({"ok": true})) }))
         .layer(middleware::from_fn_with_state(
             token.clone(),
             auth_middleware,
-        ))
+        ));
+    Router::new()
+        .merge(authed)
+        .route("/eval-result", post(handle_eval_result))
         .with_state(ServerState { ctx })
 }
 
@@ -104,6 +113,29 @@ async fn handle_mcp_post(State(state): State<ServerState>, body: Body) -> Respon
         .into_response()
 }
 
+/// Receive a browser_eval writeback (nonce-authorized, one-time).
+async fn handle_eval_result(State(state): State<ServerState>, body: Body) -> Response {
+    let bytes = match axum::body::to_bytes(body, 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+    };
+    let msg: Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    };
+    let id = msg.get("id").and_then(Value::as_str).unwrap_or("");
+    let nonce = msg.get("nonce").and_then(Value::as_str).unwrap_or("");
+    let payload = json!({
+        "ok": msg.get("ok").cloned().unwrap_or(Value::Bool(false)),
+        "value": msg.get("value").cloned().unwrap_or(Value::Null),
+    });
+    if state.ctx.eval_results.resolve(id, nonce, payload) {
+        StatusCode::NO_CONTENT.into_response()
+    } else {
+        StatusCode::FORBIDDEN.into_response()
+    }
+}
+
 /// Start the bridge: bind 127.0.0.1 on a random port, write the state file,
 /// spawn the server. Returns a handle with the actual port + token.
 pub async fn start(
@@ -111,16 +143,17 @@ pub async fn start(
     sink: Arc<dyn BridgeEventSink>,
     browser: Option<Arc<dyn BrowserControl>>,
 ) -> std::io::Result<RunningBridge> {
+    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
+    let port = listener.local_addr()?.port();
     let ctx = Arc::new(ToolContext {
         sandbox: Sandbox::new(config.allowed_roots()),
         approvals: ApprovalStore::new(),
         sink,
         browser,
         screenshots_dir: config.screenshots_dir(),
+        eval_results: EvalResultStore::new(),
+        writeback_url: Some(format!("http://127.0.0.1:{port}/eval-result")),
     });
-
-    let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await?;
-    let port = listener.local_addr()?.port();
     config.write_state_file(port)?;
 
     let app = router(ctx.clone(), config.token.clone());

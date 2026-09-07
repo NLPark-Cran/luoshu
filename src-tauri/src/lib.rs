@@ -12,7 +12,7 @@
 use std::sync::{Arc, Mutex};
 
 use luoshu_bridge::approval::BridgeEventSink;
-use luoshu_bridge::browser::{BrowserControl, BrowserError};
+use luoshu_bridge::browser::{BrowserControl, BrowserError, HistoryEntry};
 use luoshu_bridge::config::BridgeConfig;
 use luoshu_bridge::server::{self, RunningBridge};
 use luoshu_bridge::tools::ToolContext;
@@ -33,6 +33,30 @@ struct AppState {
     bridge: Mutex<Option<BridgeInfo>>,
     /// Last reverse-tunnel event as a string: connected/disconnected/auth_rejected.
     tunnel: Mutex<Option<String>>,
+    /// Navigation history of the main webview (oldest first, capped).
+    history: Mutex<Vec<HistoryEntry>>,
+}
+
+const HISTORY_CAP: usize = 500;
+
+/// Record a navigation, deduping consecutive repeats of the same URL.
+fn record_history(state: &AppState, url: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut history = state.history.lock().unwrap();
+    if history.last().map(|e| e.url.as_str()) == Some(url) {
+        return;
+    }
+    history.push(HistoryEntry {
+        url: url.to_string(),
+        ts,
+    });
+    if history.len() > HISTORY_CAP {
+        let excess = history.len() - HISTORY_CAP;
+        history.drain(..excess);
+    }
 }
 
 struct BridgeInfo {
@@ -81,7 +105,8 @@ impl BrowserControl for TauriBrowser {
             .get_webview("main")
             .ok_or(BrowserError::Unavailable)?;
         // Tauri's eval is fire-and-forget; the JS runs in the page context.
-        // Return values are not supported on Linux WebKitGTK → report "null".
+        // Return values reach the caller via the bridge's writeback harness
+        // (eval_relay) — this layer just needs to deliver the script.
         wv.eval(script).map_err(|e| BrowserError::Failed(e.to_string()))?;
         Ok("null".into())
     }
@@ -91,10 +116,20 @@ impl BrowserControl for TauriBrowser {
             .app
             .get_webview("main")
             .ok_or(BrowserError::Unavailable)?;
-        let url = url
+        let url_parsed = url
             .parse()
             .map_err(|_| BrowserError::Failed(format!("invalid url: {url}")))?;
-        wv.navigate(url).map_err(|e| BrowserError::Failed(e.to_string()))
+        wv.navigate(url_parsed)
+            .map_err(|e| BrowserError::Failed(e.to_string()))?;
+        let state: State<'_, AppState> = self.app.state();
+        record_history(&state, url);
+        Ok(())
+    }
+
+    async fn history(&self) -> Result<Vec<HistoryEntry>, BrowserError> {
+        let state: State<'_, AppState> = self.app.state();
+        let entries = state.history.lock().unwrap().clone();
+        Ok(entries)
     }
 }
 
@@ -190,6 +225,7 @@ pub fn run() {
         .manage(AppState {
             bridge: Mutex::new(None),
             tunnel: Mutex::new(None),
+            history: Mutex::new(Vec::new()),
         })
         .invoke_handler(tauri::generate_handler![
             bridge_status,
@@ -219,8 +255,16 @@ pub fn run() {
                 .get_window("shell")
                 .ok_or("shell window missing after build")?;
             let size = webview_window.inner_size()?;
+            let app_for_nav = app.handle().clone();
+            let main_webview =
+                tauri::webview::WebviewBuilder::new("main", WebviewUrl::External(url))
+                    .on_navigation(move |nav_url| {
+                        let state: State<'_, AppState> = app_for_nav.state();
+                        record_history(&state, nav_url.as_str());
+                        true
+                    });
             window.add_child(
-                tauri::webview::WebviewBuilder::new("main", WebviewUrl::External(url)),
+                main_webview,
                 LogicalPosition::new(0.0, TOOLBAR_HEIGHT),
                 LogicalSize::new(
                     f64::from(size.width),

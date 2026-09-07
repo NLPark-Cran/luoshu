@@ -105,10 +105,11 @@ token 不落第三方、重启即换，泄露窗口最小化；代价是每次�
 - **观猹 OAuth 登录**：壳内复用 crys 的登录态即可，原生侧暂不接。
 - **TokenPay 结算归因**：桥调用计数/上报接口预留位未做。
 - **自动更新**：tauri-plugin-updater 未接。
-- **反向隧道**：云端 agent → 用户 loopback 的 WebSocket 反连（生产刚需，
-  v1 本地验证优先）。
-- **截图内联返回**（MCP image content）、**browser_eval 返回值**（需要
-  WebKitGTK 的 `webkit_web_view_evaluate_javascript` 异步回调，tauri 层
-  目前 fire-and-forget）。
+- ~~**反向隧道**~~：已完成，见 docs/004-reverse-tunnel.md。
+- ~~**截图内联返回**（MCP image content）、**browser_eval 返回值**~~：已在 v2
+  完成——eval 返回值走「JS 回写 loopback + 一次性 nonce」（桥 token 不进页面
+  上下文），截图同时返回路径与内联 PNG。残余风险：https 页面 → http loopback
+  的 fetch 在个别 WebKitGTK 版本可能被 mixed-content 策略拦截，此时 eval 自动
+  降级为 fire-and-forget（`returned: false`）。
 - **审批 UI 加固**（防 agent 自读批准码：token 永远不进 webview DOM 之外的
   通道 —— 当前已满足，但未做屏幕截图遮蔽）。

@@ -168,6 +168,8 @@ mod tests {
             sink: Arc::new(NullSink),
             browser: None,
             screenshots_dir: std::env::temp_dir().join("shots"),
+            eval_results: crate::eval_relay::EvalResultStore::new(),
+            writeback_url: None,
         })
     }
 

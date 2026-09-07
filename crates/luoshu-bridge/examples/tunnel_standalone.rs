@@ -28,6 +28,10 @@ async fn main() {
         sink: Arc::new(NullSink),
         browser: None,
         screenshots_dir: config.screenshots_dir(),
+        eval_results: luoshu_bridge::eval_relay::EvalResultStore::new(),
+        // No loopback HTTP server in tunnel-only mode: browser_eval falls
+        // back to fire-and-forget.
+        writeback_url: None,
     });
     eprintln!("tunnel_standalone: dialing {}", creds.cloud_url);
     run_tunnel(ctx, creds, None).await;

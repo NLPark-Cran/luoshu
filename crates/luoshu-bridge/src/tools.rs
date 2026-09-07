@@ -14,6 +14,11 @@ pub const SHELL_TIMEOUT: Duration = Duration::from_secs(30);
 pub const SHELL_OUTPUT_CAP: usize = 64 * 1024;
 pub const FS_READ_CAP_DEFAULT: usize = 256 * 1024;
 pub const FS_READ_CAP_MAX: usize = 1024 * 1024;
+/// How long `luoshu_browser_eval` waits for the page to write back a value
+/// before falling back to fire-and-forget semantics.
+pub const EVAL_TIMEOUT: Duration = Duration::from_secs(15);
+/// Inline screenshot images above this size are skipped (path-only result).
+pub const SCREENSHOT_INLINE_CAP: usize = 12 * 1024 * 1024;
 
 pub struct ToolContext {
     pub sandbox: Sandbox,
@@ -21,6 +26,11 @@ pub struct ToolContext {
     pub sink: Arc<dyn BridgeEventSink>,
     pub browser: Option<Arc<dyn BrowserControl>>,
     pub screenshots_dir: PathBuf,
+    /// Pending browser_eval writebacks (nonce-guarded, one-time).
+    pub eval_results: crate::eval_relay::EvalResultStore,
+    /// Loopback URL the eval harness POSTs results to (None when the HTTP
+    /// bridge is not running, e.g. tunnel-only standalone mode).
+    pub writeback_url: Option<String>,
 }
 
 /// MCP `tools/list` descriptors (JSON Schema for each tool's arguments).
@@ -73,12 +83,12 @@ pub fn tool_descriptors() -> Value {
         },
         {
             "name": "luoshu_screenshot",
-            "description": "Capture a screenshot of the primary screen; returns the saved PNG path (no inline image in v1).",
+            "description": "Capture a screenshot of the primary screen; returns the saved PNG path plus the image inline.",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
         },
         {
             "name": "luoshu_browser_eval",
-            "description": "Evaluate JavaScript in the Luoshu embedded webview (Computer-Use hook).",
+            "description": "Evaluate JavaScript in the Luoshu embedded webview (Computer-Use hook). Returns the completion value (promise-aware) when the writeback channel is available.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"script": {"type": "string"}},
@@ -95,6 +105,17 @@ pub fn tool_descriptors() -> Value {
                 "required": ["url"],
                 "additionalProperties": false
             }
+        },
+        {
+            "name": "luoshu_browser_history",
+            "description": "List recent navigation history of the Luoshu embedded webview (newest first).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "description": "Max entries to return (default 50, cap 200)"}
+                },
+                "additionalProperties": false
+            }
         }
     ])
 }
@@ -102,18 +123,37 @@ pub fn tool_descriptors() -> Value {
 #[derive(Debug)]
 pub struct ToolError(pub String);
 
+/// One tool invocation's output: a JSON value plus an optional inline image
+/// (rendered as an MCP `image` content block).
+pub struct ToolOutput {
+    pub value: Value,
+    /// (base64 data, MIME type)
+    pub image: Option<(String, String)>,
+}
+
+impl ToolOutput {
+    fn json(value: Value) -> Self {
+        Self {
+            value,
+            image: None,
+        }
+    }
+}
+
 /// Dispatch a `tools/call`. Errors become MCP `isError: true` results.
-pub async fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Result<Value, ToolError> {
-    match name {
+pub async fn call_tool(ctx: &ToolContext, name: &str, args: &Value) -> Result<ToolOutput, ToolError> {
+    let value = match name {
         "luoshu_sysinfo" => tool_sysinfo(),
         "luoshu_fs_read" => tool_fs_read(ctx, args).await,
         "luoshu_fs_write" => tool_fs_write(ctx, args).await,
         "luoshu_shell" => tool_shell(ctx, args).await,
-        "luoshu_screenshot" => tool_screenshot(ctx).await,
+        "luoshu_screenshot" => return tool_screenshot(ctx).await,
         "luoshu_browser_eval" => tool_browser_eval(ctx, args).await,
         "luoshu_browser_navigate" => tool_browser_navigate(ctx, args).await,
+        "luoshu_browser_history" => tool_browser_history(ctx, args).await,
         other => Err(ToolError(format!("unknown tool: {other}"))),
-    }
+    }?;
+    Ok(ToolOutput::json(value))
 }
 
 fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
@@ -323,15 +363,30 @@ async fn tool_shell(ctx: &ToolContext, args: &Value) -> Result<Value, ToolError>
 
 // ---------------------------------------------------------------- screenshot
 
-async fn tool_screenshot(ctx: &ToolContext) -> Result<Value, ToolError> {
+async fn tool_screenshot(ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
     let dir = ctx.screenshots_dir.clone();
-    tokio::task::spawn_blocking(move || capture_screenshot(&dir))
+    let path = tokio::task::spawn_blocking(move || capture_screenshot(&dir))
         .await
-        .map_err(|e| ToolError(format!("join failed: {e}")))?
+        .map_err(|e| ToolError(format!("join failed: {e}")))??;
+    // Inline the PNG as an MCP image content block (task 2). Oversized
+    // captures degrade gracefully to path-only.
+    let bytes = std::fs::read(&path).map_err(|e| ToolError(format!("read failed: {e}")))?;
+    let inline = bytes.len() <= SCREENSHOT_INLINE_CAP;
+    let image = inline.then(|| {
+        (
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
+            "image/png".to_string(),
+        )
+    });
+    Ok(ToolOutput {
+        value: json!({ "path": path.to_string_lossy(), "inline": inline }),
+        image,
+    })
 }
 
+/// Capture the primary screen, save to `dir`, return the PNG path.
 #[cfg(feature = "screenshot")]
-fn capture_screenshot(dir: &std::path::Path) -> Result<Value, ToolError> {
+fn capture_screenshot(dir: &std::path::Path) -> Result<PathBuf, ToolError> {
     std::fs::create_dir_all(dir).map_err(|e| ToolError(format!("mkdir failed: {e}")))?;
     let screens = screenshots::Screen::all()
         .map_err(|e| ToolError(format!("no display / screen access: {e}")))?;
@@ -348,11 +403,11 @@ fn capture_screenshot(dir: &std::path::Path) -> Result<Value, ToolError> {
     let path = dir.join(format!("screenshot-{ts}.png"));
     img.save(&path)
         .map_err(|e| ToolError(format!("save failed: {e}")))?;
-    Ok(json!({ "path": path.to_string_lossy() }))
+    Ok(path)
 }
 
 #[cfg(not(feature = "screenshot"))]
-fn capture_screenshot(_dir: &std::path::Path) -> Result<Value, ToolError> {
+fn capture_screenshot(_dir: &std::path::Path) -> Result<PathBuf, ToolError> {
     Err(ToolError(
         "screenshot support not compiled in (feature `screenshot` disabled)".into(),
     ))
@@ -360,17 +415,85 @@ fn capture_screenshot(_dir: &std::path::Path) -> Result<Value, ToolError> {
 
 // ---------------------------------------------------------------- browser
 
+/// Wrap the agent's script in a harness that POSTs the completion value to
+/// the loopback writeback endpoint. The bridge bearer token is NOT embedded;
+/// the per-eval one-time nonce authorizes exactly one writeback.
+fn build_writeback_script(url: &str, id: &str, nonce: &str, script: &str) -> String {
+    let url_js = serde_json::to_string(url).unwrap_or_default();
+    let id_js = serde_json::to_string(id).unwrap_or_default();
+    let nonce_js = serde_json::to_string(nonce).unwrap_or_default();
+    let script_js = serde_json::to_string(script).unwrap_or_default();
+    format!(
+        r#"(() => {{
+  const done = (ok, value) => {{
+    try {{
+      fetch({url_js}, {{method: "POST", mode: "no-cors",
+        headers: {{"Content-Type": "text/plain"}},
+        body: JSON.stringify({{id: {id_js}, nonce: {nonce_js}, ok, value}})
+      }}).catch(() => {{}});
+    }} catch (_) {{}}
+  }};
+  const ser = (v) => {{
+    try {{ return JSON.stringify(v === undefined ? null : v); }}
+    catch (_) {{ return JSON.stringify(String(v)); }}
+  }};
+  (async () => {{
+    try {{ done(true, ser(await (0, eval)({script_js}))); }}
+    catch (e) {{ done(false, String(e)); }}
+  }})();
+}})()"#
+    )
+}
+
 async fn tool_browser_eval(ctx: &ToolContext, args: &Value) -> Result<Value, ToolError> {
     let script = arg_str(args, "script")?;
     let browser = ctx
         .browser
         .as_ref()
         .ok_or_else(|| ToolError(BrowserError::Unavailable.to_string()))?;
-    let result = browser
-        .eval(script)
-        .await
-        .map_err(|e| ToolError(e.to_string()))?;
-    Ok(json!({ "result": result }))
+
+    let Some(url) = &ctx.writeback_url else {
+        // No HTTP bridge (tunnel-only mode): legacy fire-and-forget.
+        browser
+            .eval(script)
+            .await
+            .map_err(|e| ToolError(e.to_string()))?;
+        return Ok(json!({ "result": null, "returned": false }));
+    };
+
+    let (id, nonce, rx) = ctx.eval_results.create();
+    let wrapped = build_writeback_script(url, &id, &nonce, script);
+    if let Err(e) = browser.eval(&wrapped).await {
+        ctx.eval_results.cancel(&id);
+        return Err(ToolError(e.to_string()));
+    }
+    match tokio::time::timeout(EVAL_TIMEOUT, rx).await {
+        Ok(Ok(payload)) => {
+            if payload["ok"].as_bool().unwrap_or(false) {
+                let value = payload
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .map(|s| serde_json::from_str(s).unwrap_or(Value::String(s.to_string())))
+                    .unwrap_or(Value::Null);
+                Ok(json!({ "result": value, "returned": true }))
+            } else {
+                Ok(json!({
+                    "threw": true,
+                    "error": payload["value"].as_str().unwrap_or("unknown error"),
+                    "returned": true,
+                }))
+            }
+        }
+        Ok(Err(_)) => Err(ToolError("eval result channel dropped".into())),
+        Err(_) => {
+            ctx.eval_results.cancel(&id);
+            Ok(json!({
+                "result": null,
+                "returned": false,
+                "note": "page did not write back within timeout; script ran fire-and-forget",
+            }))
+        }
+    }
 }
 
 async fn tool_browser_navigate(ctx: &ToolContext, args: &Value) -> Result<Value, ToolError> {
@@ -386,6 +509,29 @@ async fn tool_browser_navigate(ctx: &ToolContext, args: &Value) -> Result<Value,
     Ok(json!({ "navigated": url }))
 }
 
+async fn tool_browser_history(ctx: &ToolContext, args: &Value) -> Result<Value, ToolError> {
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| (n as usize).clamp(1, 200))
+        .unwrap_or(50);
+    let browser = ctx
+        .browser
+        .as_ref()
+        .ok_or_else(|| ToolError(BrowserError::Unavailable.to_string()))?;
+    let history = browser
+        .history()
+        .await
+        .map_err(|e| ToolError(e.to_string()))?;
+    let entries: Vec<Value> = history
+        .iter()
+        .rev()
+        .take(limit)
+        .map(|e| json!({"url": e.url, "ts": e.ts}))
+        .collect();
+    Ok(json!({ "entries": entries }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +544,8 @@ mod tests {
             sink: Arc::new(NullSink),
             browser: None,
             screenshots_dir: root.join("shots"),
+            eval_results: crate::eval_relay::EvalResultStore::new(),
+            writeback_url: None,
         }
     }
 
@@ -501,6 +649,38 @@ mod tests {
     async fn sysinfo_smoke() {
         let res = tool_sysinfo().unwrap();
         assert!(res["cpu_count"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn browser_history_newest_first_with_limit() {
+        use crate::browser::HistoryEntry;
+
+        struct HistBrowser;
+        #[async_trait::async_trait]
+        impl BrowserControl for HistBrowser {
+            async fn eval(&self, _script: &str) -> Result<String, BrowserError> {
+                Ok("null".into())
+            }
+            async fn navigate(&self, _url: &str) -> Result<(), BrowserError> {
+                Ok(())
+            }
+            async fn history(&self) -> Result<Vec<HistoryEntry>, BrowserError> {
+                Ok(vec![
+                    HistoryEntry { url: "https://a.example".into(), ts: 1 },
+                    HistoryEntry { url: "https://b.example".into(), ts: 2 },
+                    HistoryEntry { url: "https://c.example".into(), ts: 3 },
+                ])
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx(tmp.path());
+        ctx.browser = Some(Arc::new(HistBrowser));
+        let res = tool_browser_history(&ctx, &json!({"limit": 2})).await.unwrap();
+        let entries = res["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["url"], "https://c.example");
+        assert_eq!(entries[1]["url"], "https://b.example");
     }
 
     #[tokio::test]

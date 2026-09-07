@@ -11,6 +11,13 @@ pub enum BrowserError {
     Failed(String),
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HistoryEntry {
+    pub url: String,
+    /// Unix seconds.
+    pub ts: u64,
+}
+
 #[async_trait]
 pub trait BrowserControl: Send + Sync {
     /// Evaluate JS in the embedded webview. Returns a JSON-encoded result
@@ -19,4 +26,9 @@ pub trait BrowserControl: Send + Sync {
 
     /// Navigate the embedded webview to `url`.
     async fn navigate(&self, url: &str) -> Result<(), BrowserError>;
+
+    /// Recent navigation history (oldest first). Default: unavailable.
+    async fn history(&self) -> Result<Vec<HistoryEntry>, BrowserError> {
+        Err(BrowserError::Unavailable)
+    }
 }

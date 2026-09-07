@@ -18,6 +18,7 @@ pub mod approval;
 pub mod auth;
 pub mod browser;
 pub mod config;
+pub mod eval_relay;
 pub mod mcp;
 pub mod sandbox;
 pub mod server;

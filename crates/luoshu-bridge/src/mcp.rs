@@ -43,17 +43,23 @@ pub async fn handle_request(ctx: &Arc<ToolContext>, msg: &Value) -> Value {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             match call_tool(ctx, name, &args).await {
-                Ok(result) => ok(
-                    id,
-                    json!({
-                        "content": [{
-                            "type": "text",
-                            "text": serde_json::to_string_pretty(&result).unwrap_or_default()
-                        }],
-                        "structuredContent": result,
-                        "isError": false
-                    }),
-                ),
+                Ok(output) => {
+                    let mut content = vec![json!({
+                        "type": "text",
+                        "text": serde_json::to_string_pretty(&output.value).unwrap_or_default()
+                    })];
+                    if let Some((data, mime)) = output.image {
+                        content.push(json!({"type": "image", "data": data, "mimeType": mime}));
+                    }
+                    ok(
+                        id,
+                        json!({
+                            "content": content,
+                            "structuredContent": output.value,
+                            "isError": false
+                        }),
+                    )
+                }
                 Err(e) => ok(
                     id,
                     json!({
@@ -89,6 +95,8 @@ mod tests {
             sink: Arc::new(NullSink),
             browser: None,
             screenshots_dir: std::env::temp_dir().join("shots"),
+            eval_results: crate::eval_relay::EvalResultStore::new(),
+            writeback_url: None,
         })
     }
 

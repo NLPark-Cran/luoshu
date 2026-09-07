@@ -24,6 +24,7 @@ async-trait = "0.1"
 screenshots = { version = "0.8", optional = true }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3.34"
+base64 = "0.23.1"
 
 [dev-dependencies]
 tempfile = "3"

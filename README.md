@@ -94,8 +94,8 @@ loopback 中继地址 + 每会话 relay token（设备 token 永不出云端主�
 | `luoshu_sysinfo` | OS/内核/arch/CPU/内存/uptime |
 | `luoshu_fs_read` / `luoshu_fs_write` | 沙箱内读写文本（默认家目录；隐藏目录与 `.ssh`/`.env`/`*.pem` 等敏感模式拒绝；`~/.luoshu/allowed_roots.json` 可自定义根） |
 | `luoshu_shell` | 30s 超时 + 64KB 输出截断；危险命令需 UI 弹窗里的一次性 6 位批准码（5 分钟 TTL，绑定命令） |
-| `luoshu_screenshot` | 截屏存 `~/.luoshu/screenshots/`，返回路径（v1 不内联图像） |
-| `luoshu_browser_eval` / `luoshu_browser_navigate` | 驱动内嵌 webview（Computer-Use 钩子；Linux 上 eval 不返回值） |
+| `luoshu_screenshot` | 截屏存 `~/.luoshu/screenshots/`，返回路径 + 内联 PNG（MCP image content，>12MB 降级为仅路径） |
+| `luoshu_browser_eval` / `luoshu_browser_navigate` | 驱动内嵌 webview（Computer-Use 钩子；eval 经一次性 nonce 回写返回 Promise 感知完成值，无回写通道时降级 fire-and-forget） |
 
 ## 安全模型（摘要，详见 docs/003）
 
