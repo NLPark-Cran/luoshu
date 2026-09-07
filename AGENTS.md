@@ -21,6 +21,7 @@ MVP 已完成并推送：`crates/luoshu-bridge`（loopback MCP 设备桥）+ `sr
 
 ## 纪律
 
+- **构建内存纪律（OOM 教训 2026-09-07）**：生产机仅 4GB RAM。任何 `npm run build` 必须 `NODE_OPTIONS="--max-old-space-size=1024"`，且同一时间只跑一个构建。违规曾一夜触发 3 次 OOM 杀死 cran-code 服务（全线 WS 断连、后台任务丢失）。
 - commit 身份必须 `NLPark-Cran <crina@tt2.li>`（repo-local 已配置，勿改）。
 - Rust：bridge 逻辑必须在无 GUI 环境可测（`cargo test -p luoshu-bridge`）；Tauri GUI 部分缺 webkit 依赖时记录即可。
 - 不提交任何密钥；bridge token 永远 per-install 随机。
