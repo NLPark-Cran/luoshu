@@ -46,6 +46,60 @@ button:hover { background: #efefef; }
 .status .dot { width: 8px; height: 8px; border-radius: 50%; }
 .status.green .dot { background: #22c55e; }
 .status.red .dot { background: #ef4444; }
+.status.gray .dot { background: #9ca3af; }
+
+/* settings dialog */
+.dialog.settings label {
+  display: block;
+  font-size: 12px;
+  color: #555;
+  margin: 8px 0;
+}
+.dialog.settings input {
+  width: 100%;
+  margin-top: 3px;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+  color: #333;
+}
+.dialog.settings .row { display: flex; gap: 8px; margin: 12px 0; }
+.dialog.settings .error { color: #dc2626; font-size: 12px; min-height: 16px; }
+.dialog.settings .device-current { font-size: 13px; margin-bottom: 10px; color: #333; }
+.dialog.settings details { margin: 8px 0; font-size: 12px; color: #666; }
+.dialog.settings details pre {
+  background: #f0f0f2;
+  color: #333;
+  padding: 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+button.danger { border-color: #fca5a5; color: #dc2626; }
+button.danger:hover { background: #fef2f2; }
+
+/* 暗色模式跟随系统 */
+@media (prefers-color-scheme: dark) {
+  html, body { background: #161618; }
+  #toolbar { background: #1f1f23; border-bottom-color: #303036; }
+  .brand { color: #e5e5ea; }
+  button { background: #2a2a30; border-color: #3a3a42; color: #e5e5ea; }
+  button:hover { background: #34343c; }
+  .status { background: #2a2a30; color: #b0b0b8; }
+  .dialog { background: #1f1f23; color: #e5e5ea; }
+  .dialog .hint { color: #9a9aa2; }
+  .dialog.settings label { color: #b0b0b8; }
+  .dialog.settings input { background: #16161a; border-color: #3a3a42; color: #e5e5ea; }
+  .dialog.settings .device-current { color: #e5e5ea; }
+  .dialog.settings details { color: #9a9aa2; }
+  .dialog.settings details pre { background: #16161a; color: #cfcfd6; }
+  .dialog.about p { color: #b0b0b8; }
+  button.danger { border-color: #7f1d1d; color: #f87171; }
+  button.danger:hover { background: #2a1616; }
+}
 
 .overlay {
   position: fixed;

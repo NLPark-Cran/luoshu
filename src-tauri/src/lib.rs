@@ -35,6 +35,17 @@ struct AppState {
     tunnel: Mutex<Option<String>>,
     /// Navigation history of the main webview (oldest first, capped).
     history: Mutex<Vec<HistoryEntry>>,
+    /// Enrolled device metadata (token itself never leaves `device.json`).
+    device: Mutex<Option<DeviceMeta>>,
+    /// Running tunnel task (aborted on re-enroll / unenroll).
+    tunnel_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct DeviceMeta {
+    device_id: String,
+    name: Option<String>,
+    cloud_url: String,
 }
 
 const HISTORY_CAP: usize = 500;
@@ -63,6 +74,7 @@ struct BridgeInfo {
     port: u16,
     token: String,
     ctx: Arc<ToolContext>,
+    home_dir: std::path::PathBuf,
     _handle: Arc<RunningBridge>,
 }
 
@@ -191,19 +203,120 @@ fn deny_approval(state: State<'_, AppState>, token: String) {
     }
 }
 
+// ------------------------------------------------------- device enrollment
+
+#[derive(Serialize)]
+struct DeviceInfo {
+    enrolled: bool,
+    device_id: Option<String>,
+    name: Option<String>,
+    cloud_url: Option<String>,
+    tunnel: Option<String>,
+}
+
+#[tauri::command]
+fn device_info(state: State<'_, AppState>) -> DeviceInfo {
+    let device = state.device.lock().unwrap().clone();
+    let tunnel = state.tunnel.lock().unwrap().clone();
+    match device {
+        Some(meta) => DeviceInfo {
+            enrolled: true,
+            device_id: Some(meta.device_id),
+            name: meta.name,
+            cloud_url: Some(meta.cloud_url),
+            tunnel,
+        },
+        None => DeviceInfo {
+            enrolled: false,
+            device_id: None,
+            name: None,
+            cloud_url: None,
+            tunnel,
+        },
+    }
+}
+
+#[tauri::command]
+fn enroll_device(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    cloud_url: String,
+    device_id: String,
+    device_token: String,
+    name: Option<String>,
+) -> Result<(), String> {
+    let cloud_url = cloud_url.trim().trim_end_matches('/').to_string();
+    let device_id = device_id.trim().to_string();
+    let device_token = device_token.trim().to_string();
+    if cloud_url.is_empty() || device_id.is_empty() || device_token.is_empty() {
+        return Err("cloud_url / device_id / device_token 均不能为空".into());
+    }
+    if !cloud_url.starts_with("https://") && !cloud_url.starts_with("http://") {
+        return Err("cloud_url 必须以 https:// 或 http:// 开头".into());
+    }
+
+    let (ctx, home_dir) = {
+        let guard = state.bridge.lock().unwrap();
+        let info = guard.as_ref().ok_or("设备桥尚未启动，稍后再试")?;
+        (info.ctx.clone(), info.home_dir.clone())
+    };
+
+    let creds = luoshu_bridge::config::DeviceCredentials {
+        cloud_url: cloud_url.clone(),
+        device_id: device_id.clone(),
+        device_token,
+        name: name.filter(|n| !n.trim().is_empty()),
+    };
+    // Persist first (0600), then (re)start the tunnel.
+    let cfg = BridgeConfig {
+        home_dir,
+        token: String::new(), // unused for device.json writes
+    };
+    cfg.write_device_credentials(&creds)
+        .map_err(|e| format!("写入 device.json 失败: {e}"))?;
+
+    stop_tunnel(&app);
+    let handle = start_tunnel(&app, ctx, creds.clone());
+    *state.tunnel_task.lock().unwrap() = Some(handle);
+    *state.device.lock().unwrap() = Some(DeviceMeta {
+        device_id,
+        name: creds.name,
+        cloud_url,
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn unenroll_device(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let home_dir = {
+        let guard = state.bridge.lock().unwrap();
+        guard.as_ref().map(|info| info.home_dir.clone())
+    };
+    if let Some(home) = home_dir {
+        let path = home.join("device.json");
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| format!("删除 device.json 失败: {e}"))?;
+        }
+    }
+    stop_tunnel(&app);
+    *state.device.lock().unwrap() = None;
+    Ok(())
+}
+
 // ------------------------------------------------------------------- run
 
 /// Spawn the reverse tunnel (ADR 004) and forward its lifecycle events to
-/// both the shell webview and `AppState` (for the status IPC).
+/// both the shell webview and `AppState` (for the status IPC). Returns the
+/// tunnel task handle so enrollment changes can abort it.
 fn start_tunnel(
     app: &AppHandle,
     ctx: Arc<ToolContext>,
     creds: luoshu_bridge::config::DeviceCredentials,
-) {
+) -> tauri::async_runtime::JoinHandle<()> {
     use luoshu_bridge::tunnel::{run_tunnel, TunnelEvent};
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    tauri::async_runtime::spawn(run_tunnel(ctx, creds, Some(tx)));
+    let handle = tauri::async_runtime::spawn(run_tunnel(ctx, creds, Some(tx)));
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
@@ -217,6 +330,17 @@ fn start_tunnel(
             let _ = app_handle.emit_to("shell", "tunnel-status", json!({"state": state_str}));
         }
     });
+    handle
+}
+
+/// Stop the current tunnel task (if any) and clear its status.
+fn stop_tunnel(app: &AppHandle) {
+    let state: State<'_, AppState> = app.state();
+    if let Some(handle) = state.tunnel_task.lock().unwrap().take() {
+        handle.abort();
+    }
+    *state.tunnel.lock().unwrap() = None;
+    let _ = app.emit_to("shell", "tunnel-status", json!({"state": null}));
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -226,13 +350,18 @@ pub fn run() {
             bridge: Mutex::new(None),
             tunnel: Mutex::new(None),
             history: Mutex::new(Vec::new()),
+            device: Mutex::new(None),
+            tunnel_task: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             bridge_status,
             mcp_config,
             get_target_url,
             nav,
-            deny_approval
+            deny_approval,
+            device_info,
+            enroll_device,
+            unenroll_device
         ])
         .setup(|app| {
             let url: tauri::Url = target_url()
@@ -300,15 +429,26 @@ pub fn run() {
                         // Cloud enrollment (ADR 004): dial out so cloud agents
                         // can reach this device through the tunnel relay.
                         let device_creds = config.load_device_credentials();
+                        let home_dir = config.home_dir.clone();
                         match server::start(config, sink, Some(browser)).await {
                         Ok(running) => {
                             if let Some(creds) = device_creds {
-                                start_tunnel(&app_handle, running.ctx.clone(), creds);
+                                let meta = DeviceMeta {
+                                    device_id: creds.device_id.clone(),
+                                    name: creds.name.clone(),
+                                    cloud_url: creds.cloud_url.clone(),
+                                };
+                                let handle =
+                                    start_tunnel(&app_handle, running.ctx.clone(), creds);
+                                let state: State<'_, AppState> = app_handle.state();
+                                *state.tunnel_task.lock().unwrap() = Some(handle);
+                                *state.device.lock().unwrap() = Some(meta);
                             }
                             let info = BridgeInfo {
                                 port: running.port,
                                 token: running.token.clone(),
                                 ctx: running.ctx.clone(),
+                                home_dir,
                                 _handle: Arc::new(running),
                             };
                             let state: State<'_, AppState> = app_handle.state();

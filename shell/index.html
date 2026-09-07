@@ -15,11 +15,49 @@
     <button id="nav-reload" title="刷新">⟳</button>
     <button id="nav-home" title="主页">⌂</button>
     <span class="spacer"></span>
+    <span id="tunnel-status" class="status gray" title="反向隧道状态">
+      <span class="dot"></span><span id="tunnel-label">隧道 未登记</span>
+    </span>
     <span id="bridge-status" class="status red" title="设备桥状态">
       <span class="dot"></span><span id="bridge-label">设备桥</span>
     </span>
     <button id="copy-mcp" title="复制 cran-code MCP 配置">复制 MCP 配置</button>
+    <button id="settings-btn" title="设置">设置</button>
     <button id="about-btn" title="关于">关于</button>
+  </div>
+
+  <!-- settings page: device enrollment -->
+  <div id="settings-overlay" class="overlay hidden">
+    <div class="dialog settings">
+      <h2>⚙️ 设置 · 设备登记（反向隧道）</h2>
+      <div id="device-current" class="device-current"></div>
+      <div id="enroll-form">
+        <p class="hint">
+          登记后洛书会主动连接云端（wss），云端 Agent 即可调用本机工具。
+          设备凭证只保存在 <code>~/.luoshu/device.json</code>（0600）。
+        </p>
+        <details>
+          <summary>如何获取设备凭证？</summary>
+          <p class="hint">
+            在下方「云端地址」登录账号后，创建设备（token 只显示一次）：
+          </p>
+          <pre>curl -X POST &lt;云端地址&gt;/api/v2/devices \
+  -H "Authorization: Bearer &lt;你的登录 JWT&gt;" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "我的机器"}'</pre>
+        </details>
+        <label>云端地址 <input id="enroll-cloud" type="text" placeholder="https://crys.tt2.li" /></label>
+        <label>设备 ID <input id="enroll-id" type="text" placeholder="xxxxxxxx-xxxx-..." /></label>
+        <label>设备 Token <input id="enroll-token" type="password" placeholder="64 位十六进制" /></label>
+        <label>设备名称（可选） <input id="enroll-name" type="text" placeholder="我的机器" /></label>
+        <div class="row">
+          <button id="enroll-save">保存并连接</button>
+          <button id="enroll-clear" class="danger">注销设备</button>
+        </div>
+        <p id="enroll-error" class="error"></p>
+      </div>
+      <button id="settings-close">关闭</button>
+    </div>
   </div>
 
   <!-- approval dialog -->
