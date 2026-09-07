@@ -31,6 +31,8 @@ fn target_url() -> String {
 /// Shared app state managed by Tauri.
 struct AppState {
     bridge: Mutex<Option<BridgeInfo>>,
+    /// Last reverse-tunnel event as a string: connected/disconnected/auth_rejected.
+    tunnel: Mutex<Option<String>>,
 }
 
 struct BridgeInfo {
@@ -45,6 +47,8 @@ struct BridgeStatus {
     running: bool,
     port: Option<u16>,
     url: Option<String>,
+    /// Reverse-tunnel state (None when the device is not enrolled).
+    tunnel: Option<String>,
 }
 
 // ------------------------------------------------------------------ events
@@ -99,16 +103,19 @@ impl BrowserControl for TauriBrowser {
 #[tauri::command]
 fn bridge_status(state: State<'_, AppState>) -> BridgeStatus {
     let guard = state.bridge.lock().unwrap();
+    let tunnel = state.tunnel.lock().unwrap().clone();
     match guard.as_ref() {
         Some(info) => BridgeStatus {
             running: true,
             port: Some(info.port),
             url: Some(format!("http://127.0.0.1:{}/mcp", info.port)),
+            tunnel,
         },
         None => BridgeStatus {
             running: false,
             port: None,
             url: None,
+            tunnel,
         },
     }
 }
@@ -151,11 +158,38 @@ fn deny_approval(state: State<'_, AppState>, token: String) {
 
 // ------------------------------------------------------------------- run
 
+/// Spawn the reverse tunnel (ADR 004) and forward its lifecycle events to
+/// both the shell webview and `AppState` (for the status IPC).
+fn start_tunnel(
+    app: &AppHandle,
+    ctx: Arc<ToolContext>,
+    creds: luoshu_bridge::config::DeviceCredentials,
+) {
+    use luoshu_bridge::tunnel::{run_tunnel, TunnelEvent};
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tauri::async_runtime::spawn(run_tunnel(ctx, creds, Some(tx)));
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let state_str = match event {
+                TunnelEvent::Connected => "connected",
+                TunnelEvent::Disconnected => "disconnected",
+                TunnelEvent::AuthRejected => "auth_rejected",
+            };
+            let state: State<'_, AppState> = app_handle.state();
+            *state.tunnel.lock().unwrap() = Some(state_str.to_string());
+            let _ = app_handle.emit_to("shell", "tunnel-status", json!({"state": state_str}));
+        }
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             bridge: Mutex::new(None),
+            tunnel: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             bridge_status,
@@ -218,8 +252,15 @@ pub fn run() {
                     app: app_handle.clone(),
                 });
                 match BridgeConfig::from_env() {
-                    Ok(config) => match server::start(config, sink, Some(browser)).await {
+                    Ok(config) => {
+                        // Cloud enrollment (ADR 004): dial out so cloud agents
+                        // can reach this device through the tunnel relay.
+                        let device_creds = config.load_device_credentials();
+                        match server::start(config, sink, Some(browser)).await {
                         Ok(running) => {
+                            if let Some(creds) = device_creds {
+                                start_tunnel(&app_handle, running.ctx.clone(), creds);
+                            }
                             let info = BridgeInfo {
                                 port: running.port,
                                 token: running.token.clone(),
@@ -231,7 +272,8 @@ pub fn run() {
                             let _ = app_handle.emit_to("shell", "bridge-status", json!({"running": true}));
                         }
                         Err(e) => eprintln!("luoshu: bridge failed to start: {e}"),
-                    },
+                        }
+                    }
                     Err(e) => eprintln!("luoshu: bridge config error: {e}"),
                 }
             });

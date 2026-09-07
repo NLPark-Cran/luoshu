@@ -10,6 +10,7 @@
 
 - **壳**：Tauri v2（Rust + 系统 WebView）。窗口内嵌 https://crys.tt2.li（`LUOSHU_TARGET_URL` 可覆盖），顶部 48px 原生工具栏（导航 / 设备桥状态灯 / 复制 MCP 配置 / 审批弹窗 / 关于页）
 - **桥**：`crates/luoshu-bridge` —— loopback（127.0.0.1，随机端口）MCP server，Agent 经 Bearer token 授权后调用本地能力
+- **隧**：反向隧道（ADR 004）——登记设备后，洛书作为 WS 客户端主动连接 `wss://crys.tt2.li/api/v2/devices/{id}/tunnel`，云端把 MCP 调用经隧道下发、本地执行回传（断线重连 + 指数退避；4401 = 凭证失效即停）
 - **魂**：陪伴人格「洛洛」（喜欢苹果 🍎），跨会话记忆，观猹登录 + TokenPay 结算（均 deferred）
 
 ## 构建
@@ -41,6 +42,30 @@ LUOSHU_TARGET_URL=http://localhost:5496 cargo run -p luoshu   # 指向自建实�
 
 启动后设备桥自动拉起，并把 `{port, token, pid, started_at}` 写入
 `~/.luoshu/bridge.json`（0600，token 每次启动随机重生成）。
+
+## 反向隧道：让云端 Agent 触达本机
+
+云端 cran-code 的 worker 连不到你的 loopback，所以洛书登记设备后**主动外连**
+建立 WebSocket 隧道（ADR 004）。登记（观猹登录到位前的过渡形态）：
+
+1. 在 crys Web UI 登录后调用 `POST /api/v2/devices` 创建设备（响应里的
+   `token` 只显示一次）；
+2. 把凭证写入 `~/.luoshu/device.json`（0600）：
+
+```json
+{
+  "cloud_url": "https://crys.tt2.li",
+  "device_id": "<device uuid>",
+  "device_token": "<一次性 token>",
+  "name": "我的机器"
+}
+```
+
+3. 重启洛书：隧道自动连接，工具栏状态灯显示 tunnel 状态（`tunnel-status` 事件）。
+
+云端侧：会话创建时传 `device_id` 绑定设备；worker 的 MCP 客户端拿到的是
+loopback 中继地址 + 每会话 relay token（设备 token 永不出云端主进程）。
+吊销：`DELETE /api/v2/devices/{id}`，在线隧道即刻断开。
 
 ## 设备桥：给 cran-code 接入本地工具
 
@@ -89,7 +114,8 @@ LUOSHU_TARGET_URL=http://localhost:5496 cargo run -p luoshu   # 指向自建实�
 - `docs/001-shell-selection.md` — 壳选型
 - `docs/002-memory-architecture.md` — 跨会话记忆
 - `docs/003-mvp-architecture.md` — MVP 组件图、威胁模型、deferred 清单
+- `docs/004-reverse-tunnel.md` — 反向隧道（v2 任务 1）
 
 ## 状态
 
-🚧 MVP（2026-09）：壳 + 设备桥可用；观猹登录 / TokenPay / 自动更新 deferred。
+🚧 v2 进行中（2026-09）：壳 + 设备桥 + 反向隧道可用；观猹登录 / TokenPay / 自动更新 deferred。
